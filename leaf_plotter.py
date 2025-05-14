@@ -194,12 +194,23 @@ fig, ax = plt.subplots(figsize=(5, 3))
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-# --- Data Table ---
-tree = ttk.Treeview(root, columns=('Index', 'X', 'Y'), show='headings', height=10)
+from tkinter import ttk, filedialog, messagebox
+import tkinter as tk
+
+# --- Data Table with Borders ---
+style = ttk.Style()
+style.configure("Treeview", rowheight=25, borderwidth=1, relief="solid")
+style.map("Treeview", background=[("selected", "blue")], foreground=[("selected", "white")])
+
+tree = ttk.Treeview(root, columns=('Index', 'X', 'Y'), show='headings', height=10, style="Treeview")
 tree.heading('Index', text='Index')
 tree.heading('X', text='X')
 tree.heading('Y', text='Y')
 tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+scrollbar = ttk.Scrollbar(root, orient='vertical', command=tree.yview)
+tree.configure(yscroll=scrollbar.set)
+scrollbar.pack(side=tk.LEFT, fill='y')
 
 scrollbar = ttk.Scrollbar(root, orient='vertical', command=tree.yview)
 tree.configure(yscroll=scrollbar.set)
