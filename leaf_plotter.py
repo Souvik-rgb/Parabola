@@ -16,6 +16,7 @@ ser = None
 read_thread = None
 reading = False
 
+# === Serial Helpers ===
 def list_serial_ports():
     return [port.device for port in serial.tools.list_ports.comports()]
 
@@ -30,21 +31,24 @@ def connect_serial(port):
         status_label.config(text="Not connected", fg="red")
         return False
 
+# === Reading Thread ===
 def read_serial():
     global data, reading
     while reading:
         if ser and ser.in_waiting:
             try:
                 line = ser.readline().decode().strip()
-                x, y = map(float, line.split(','))
-                data.append((x, y))
-                update_plot()
-                update_table()
-                led_indicator.config(bg='green')
+                if "," in line:
+                    x, y = map(float, line.split(','))
+                    data.append((x, y))
+                    update_plot()
+                    update_table()
+                    led_indicator.config(bg='green')
             except:
                 led_indicator.config(bg='red')
         time.sleep(0.01)
 
+# === Start/Stop Read ===
 def start_reading():
     global reading, read_thread
     selected_port = port_combo.get()
@@ -78,6 +82,7 @@ def stop_reading():
     start_btn.config(state='normal')
     stop_btn.config(state='disabled')
 
+# === Plot and Table ===
 def update_plot():
     if data:
         xs, ys = zip(*data)
@@ -93,10 +98,8 @@ def update_background_color():
     if not data:
         root.config(bg="white")
         return
-
     _, ys = zip(*data)
     max_y = max(ys)
-
     if max_y < 10:
         root.config(bg="lightgray")
     elif max_y < 100:
@@ -110,6 +113,7 @@ def update_table():
     for i, (x, y) in enumerate(data):
         tree.insert('', 'end', values=(i + 1, x, y))
 
+# === Save/Load ===
 def save_data():
     if not data:
         return
@@ -150,23 +154,149 @@ def load_data():
         except Exception as e:
             messagebox.showerror("Error", f"Could not load data.\n\n{str(e)}")
 
-def refresh_ports():
-    ports = list_serial_ports()
-    port_combo['values'] = ports
-    if ports:
-        port_combo.current(0)
+# === AI Log Analysis ===
+def analyze_serial_logs(log_data):
+    issues = []
+    if "Guru Meditation Error" in log_data:
+        issues.append("Guru Meditation Error: Possible crash due to memory access or pointer issue.")
+    if "WDT reset" in log_data or "watchdog" in log_data.lower():
+        issues.append("Watchdog timer reset detected. Avoid blocking loops or long delays.")
+    if "Brownout detector" in log_data:
+        issues.append("Brownout detected: Power supply may be unstable.")
+    if log_data.lower().count("rebooting") > 2:
+        issues.append("Frequent reboots detected. Possible crash loop.")
+    if all(f"P{i}=LOW" in log_data for i in range(5)):
+        issues.append("All I/O pins are LOW — check wiring, boot mode, or firmware state.")
+    return issues
 
-def on_close():
-    stop_reading()
-    if ser and ser.is_open:
-        ser.close()
-    root.destroy()
+def extract_crash_timeline(log_data):
+    lines = log_data.splitlines()
+    crash_lines = [l for l in lines if "Guru Meditation" in l or "Backtrace" in l or "rebooting" in l or "Brownout" in l]
+    timeline = [f"{time.strftime('%H:%M:%S')} - {line}" for line in crash_lines]
+    return timeline
 
-# === GUI Setup ===
+def suggest_fixes(issues):
+    fixes = []
+    for issue in issues:
+        if "Guru Meditation" in issue:
+            fixes.append("// Check for pointer misuse or null access")
+        if "Watchdog" in issue:
+            fixes.append("if (millis() - lastAction > timeout) yield(); // replace long delay")
+        if "Brownout" in issue:
+            fixes.append("// Use stable power source: >500mA 3.3V")
+        if "GPIO34" in issue:
+            fixes.append("// Avoid using GPIO34–39 as outputs")
+        if "pinMode" in issue:
+            fixes.append("pinMode(PIN_X, OUTPUT); // Add correct pinMode for each pin")
+        if "Serial used without initialization" in issue:
+            fixes.append("Serial.begin(115200); // Add to setup()")
+    return list(set(fixes))  # Remove duplicates
+
+def run_ai_diagnosis():
+    log_data = log_text.get("1.0", tk.END)
+    issues = analyze_serial_logs(log_data)
+    timeline = extract_crash_timeline(log_data)
+    fixes = suggest_fixes(issues)
+
+    response = ""
+    if issues:
+        response += "Detected Issues:\n" + "\n".join(issues) + "\n\n"
+    if fixes:
+        response += "Suggested Fixes:\n" + "\n".join(fixes) + "\n\n"
+    if timeline:
+        response += "Crash Timeline:\n" + "\n".join(timeline)
+    if not response:
+        response = "No known issues or crash patterns found."
+    messagebox.showinfo("AI Diagnosis Report", response)
+
+    # Append suggested fixes to the log for review/export
+    if fixes:
+        log_text.insert(tk.END, "\n\n// === AI SUGGESTED FIXES ===\n")
+        for fix in fixes:
+            log_text.insert(tk.END, fix + "\n")
+
+# === Diagnostics Window ===
+def open_diagnostics_window():
+    diag_win = tk.Toplevel(root)
+    diag_win.title("I/O Pin Status & Troubleshooting")
+    diag_win.geometry("500x800")
+
+    tk.Label(diag_win, text="I/O Pin States (ESP32 - 38 pins)", font=("Arial", 14, "bold")).pack(pady=5)
+    io_frame = tk.Frame(diag_win)
+    io_frame.pack()
+
+    pin_indicators = {}
+    for i in range(38):
+        row = i // 4
+        col = i % 4
+        pin_name = f"P{i}"
+        frame = tk.Frame(io_frame, bd=1, relief=tk.RIDGE, padx=5, pady=5)
+        frame.grid(row=row, column=col, padx=5, pady=5)
+        lbl = tk.Label(frame, text=pin_name, width=6)
+        lbl.pack()
+        ind = tk.Label(frame, text="LOW", bg="red", fg="white", width=6)
+        ind.pack()
+        pin_indicators[pin_name] = ind
+
+    tk.Label(diag_win, text="Send Serial Command:").pack(pady=5)
+    command_entry = tk.Entry(diag_win, width=30)
+    command_entry.pack()
+
+    def send_command():
+        cmd = command_entry.get().strip()
+        if ser and ser.is_open and cmd:
+            try:
+                ser.write((cmd + '\n').encode())
+                log_text.insert(tk.END, f"> Sent: {cmd}\n")
+            except Exception as e:
+                log_text.insert(tk.END, f"! Error: {e}\n")
+
+    tk.Button(diag_win, text="Send", command=send_command).pack(pady=5)
+
+    tk.Label(diag_win, text="Diagnostics Log:").pack(pady=5)
+    global log_text
+    log_text = tk.Text(diag_win, height=10, width=60)
+    log_text.pack()
+
+    tk.Button(diag_win, text="Run AI Diagnosis", command=run_ai_diagnosis).pack(pady=10)
+
+    def update_pin_states():
+        if ser and ser.is_open:
+            try:
+                ser.write(b'IOSTATUS\n')
+                time.sleep(0.1)
+                buffer = ""
+                while ser.in_waiting:
+                    buffer += ser.readline().decode(errors='ignore')
+                if "IO:" in buffer:
+                    lines = [l.strip() for l in buffer.splitlines() if l.startswith("IO:")]
+                    for line in lines:
+                        items = line.replace("IO:", "").split(",")
+                        for item in items:
+                            if '=' in item:
+                                pin, val = item.split("=")
+                                pin = pin.strip().upper()
+                                val = val.strip().upper()
+                                if pin in pin_indicators:
+                                    ind = pin_indicators[pin]
+                                    ind.config(text=val)
+                                    if val == "HIGH":
+                                        ind.config(bg="green", fg="white")
+                                    else:
+                                        ind.config(bg="red", fg="white")
+                    log_text.insert(tk.END, f"[I/O Refresh] {time.strftime('%H:%M:%S')}\n")
+                    log_text.see(tk.END)
+            except Exception as e:
+                log_text.insert(tk.END, f"! Error: {e}\n")
+        diag_win.after(2000, update_pin_states)
+
+    update_pin_states()
+
+# === GUI ===
 root = tk.Tk()
 root.title("Leaf Profile Analyzer")
 
-# --- Header with Logo and Brand Info ---
+# Header with Logo and Brand Info
 header_frame = tk.Frame(root)
 header_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
@@ -189,20 +319,13 @@ brand_label.pack(anchor="w")
 model_label = tk.Label(brand_text_frame, text="Model: Unknown", font=("Arial", 12))
 model_label.pack(anchor="w")
 
-# --- Plot ---
+# Plot
 fig, ax = plt.subplots(figsize=(5, 3))
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-from tkinter import ttk, filedialog, messagebox
-import tkinter as tk
-
-# --- Data Table with Borders ---
-style = ttk.Style()
-style.configure("Treeview", rowheight=25, borderwidth=1, relief="solid")
-style.map("Treeview", background=[("selected", "blue")], foreground=[("selected", "white")])
-
-tree = ttk.Treeview(root, columns=('Index', 'X', 'Y'), show='headings', height=10, style="Treeview")
+# Data Table
+tree = ttk.Treeview(root, columns=('Index', 'X', 'Y'), show='headings', height=10)
 tree.heading('Index', text='Index')
 tree.heading('X', text='X')
 tree.heading('Y', text='Y')
@@ -212,36 +335,41 @@ scrollbar = ttk.Scrollbar(root, orient='vertical', command=tree.yview)
 tree.configure(yscroll=scrollbar.set)
 scrollbar.pack(side=tk.LEFT, fill='y')
 
-scrollbar = ttk.Scrollbar(root, orient='vertical', command=tree.yview)
-tree.configure(yscroll=scrollbar.set)
-scrollbar.pack(side=tk.LEFT, fill='y')
-
-# --- Controls ---
+# Controls
 control_frame = tk.Frame(root)
 control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
 
 tk.Label(control_frame, text="Select COM Port:").pack()
 port_combo = ttk.Combobox(control_frame, state='readonly')
 port_combo.pack(pady=5)
+
+def refresh_ports():
+    ports = list_serial_ports()
+    port_combo['values'] = ports
+    if ports:
+        port_combo.current(0)
+
 refresh_ports()
 
 tk.Button(control_frame, text="Refresh Ports", command=refresh_ports).pack(pady=5)
-
 start_btn = tk.Button(control_frame, text="Start", command=start_reading)
 start_btn.pack(pady=5)
-
 stop_btn = tk.Button(control_frame, text="Stop", command=stop_reading, state='disabled')
 stop_btn.pack(pady=5)
-
 tk.Button(control_frame, text="Save Data", command=save_data).pack(pady=5)
 tk.Button(control_frame, text="Load Data", command=load_data).pack(pady=5)
+tk.Button(control_frame, text="Diagnostics", command=lambda: open_diagnostics_window()).pack(pady=10)
 
 led_indicator = tk.Label(control_frame, text="Status", bg='gray', width=15)
 led_indicator.pack(pady=10)
-
 status_label = tk.Label(control_frame, text="Not connected", fg="red")
 status_label.pack()
 
-# === Start App ===
+def on_close():
+    stop_reading()
+    if ser and ser.is_open:
+        ser.close()
+    root.destroy()
+
 root.protocol("WM_DELETE_WINDOW", on_close)
 root.mainloop()
