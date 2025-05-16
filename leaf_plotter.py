@@ -1,3 +1,4 @@
+
 import serial
 import serial.tools.list_ports
 import threading
@@ -190,7 +191,7 @@ def suggest_fixes(issues):
             fixes.append("pinMode(PIN_X, OUTPUT); // Add correct pinMode for each pin")
         if "Serial used without initialization" in issue:
             fixes.append("Serial.begin(115200); // Add to setup()")
-    return list(set(fixes))  # Remove duplicates
+    return list(set(fixes))
 
 def run_ai_diagnosis():
     log_data = log_text.get("1.0", tk.END)
@@ -209,11 +210,43 @@ def run_ai_diagnosis():
         response = "No known issues or crash patterns found."
     messagebox.showinfo("AI Diagnosis Report", response)
 
-    # Append suggested fixes to the log for review/export
     if fixes:
         log_text.insert(tk.END, "\n\n// === AI SUGGESTED FIXES ===\n")
         for fix in fixes:
             log_text.insert(tk.END, fix + "\n")
+
+# === Interlock Viewer ===
+def open_interlock_viewer():
+    win = tk.Toplevel(root)
+    win.title("Interlock Status Viewer")
+    win.geometry("600x500")
+
+    log = tk.Text(win, height=25, width=80)
+    log.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+    log.tag_config("ACTIVE", foreground="red")
+    log.tag_config("CLEARED", foreground="green")
+
+    def read_interlocks():
+        if ser and ser.is_open:
+            try:
+                ser.write(b'INTERLOCKS\n')
+                time.sleep(0.2)
+                buffer = ""
+                while ser.in_waiting:
+                    buffer += ser.readline().decode(errors='ignore')
+                if buffer:
+                    timestamp = time.strftime("[%H:%M:%S]")
+                    for line in buffer.strip().splitlines():
+                        tag = "ACTIVE" if "ACTIVE" in line.upper() else "CLEARED"
+                        log.insert(tk.END, f"{timestamp} {line}\n", tag)
+                    log.insert(tk.END, "-" * 60 + "\n")
+                    log.see(tk.END)
+            except Exception as e:
+                log.insert(tk.END, f"! Error: {e}\n")
+
+    tk.Button(win, text="Refresh", command=read_interlocks).pack(pady=5)
+    read_interlocks()
 
 # === Diagnostics Window ===
 def open_diagnostics_window():
@@ -252,13 +285,14 @@ def open_diagnostics_window():
                 log_text.insert(tk.END, f"! Error: {e}\n")
 
     tk.Button(diag_win, text="Send", command=send_command).pack(pady=5)
-
     tk.Label(diag_win, text="Diagnostics Log:").pack(pady=5)
+
     global log_text
     log_text = tk.Text(diag_win, height=10, width=60)
     log_text.pack()
 
     tk.Button(diag_win, text="Run AI Diagnosis", command=run_ai_diagnosis).pack(pady=10)
+    tk.Button(diag_win, text="View Interlocks", command=open_interlock_viewer).pack(pady=5)
 
     def update_pin_states():
         if ser and ser.is_open:
@@ -296,7 +330,6 @@ def open_diagnostics_window():
 root = tk.Tk()
 root.title("Leaf Profile Analyzer")
 
-# Header with Logo and Brand Info
 header_frame = tk.Frame(root)
 header_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
@@ -319,12 +352,10 @@ brand_label.pack(anchor="w")
 model_label = tk.Label(brand_text_frame, text="Model: Unknown", font=("Arial", 12))
 model_label.pack(anchor="w")
 
-# Plot
 fig, ax = plt.subplots(figsize=(5, 3))
 canvas = FigureCanvasTkAgg(fig, master=root)
 canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-# Data Table
 tree = ttk.Treeview(root, columns=('Index', 'X', 'Y'), show='headings', height=10)
 tree.heading('Index', text='Index')
 tree.heading('X', text='X')
@@ -335,7 +366,6 @@ scrollbar = ttk.Scrollbar(root, orient='vertical', command=tree.yview)
 tree.configure(yscroll=scrollbar.set)
 scrollbar.pack(side=tk.LEFT, fill='y')
 
-# Controls
 control_frame = tk.Frame(root)
 control_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
 
@@ -358,7 +388,7 @@ stop_btn = tk.Button(control_frame, text="Stop", command=stop_reading, state='di
 stop_btn.pack(pady=5)
 tk.Button(control_frame, text="Save Data", command=save_data).pack(pady=5)
 tk.Button(control_frame, text="Load Data", command=load_data).pack(pady=5)
-tk.Button(control_frame, text="Diagnostics", command=lambda: open_diagnostics_window()).pack(pady=10)
+tk.Button(control_frame, text="Diagnostics", command=open_diagnostics_window).pack(pady=10)
 
 led_indicator = tk.Label(control_frame, text="Status", bg='gray', width=15)
 led_indicator.pack(pady=10)
